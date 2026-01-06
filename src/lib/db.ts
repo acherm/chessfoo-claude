@@ -1,10 +1,11 @@
 import { Pool } from 'pg';
 
+const connectionString = process.env.POSTGRES_URL || process.env.DATABASE_URL || '';
+
 const pool = new Pool({
-  connectionString: process.env.POSTGRES_URL,
-  ssl: {
-    rejectUnauthorized: false
-  }
+  connectionString: connectionString.includes('?')
+    ? connectionString
+    : `${connectionString}?sslmode=require`,
 });
 
 export interface GameSession {
