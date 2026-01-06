@@ -1,21 +1,18 @@
-import { Pool } from 'pg';
+import { createClient } from '@supabase/supabase-js';
 
-const connectionString = process.env.POSTGRES_URL || process.env.DATABASE_URL || '';
+const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
 
-const pool = new Pool({
-  connectionString: connectionString.includes('?')
-    ? connectionString
-    : `${connectionString}?sslmode=require`,
-});
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 export interface GameSession {
   id: string;
-  started_at: Date;
-  completed_at: Date | null;
+  started_at: string;
+  completed_at: string | null;
   is_won: boolean;
   total_moves: number;
   duration_seconds: number | null;
-  moves: string;
+  moves: Move[];
 }
 
 export interface Move {
@@ -26,50 +23,72 @@ export interface Move {
 }
 
 export async function createTables() {
-  const client = await pool.connect();
-  try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS game_sessions (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        completed_at TIMESTAMP WITH TIME ZONE,
-        is_won BOOLEAN DEFAULT FALSE,
-        total_moves INTEGER DEFAULT 0,
-        duration_seconds INTEGER,
-        moves JSONB DEFAULT '[]'::jsonb
-      )
-    `);
-  } finally {
-    client.release();
+  // Create table using Supabase SQL editor or run this SQL manually:
+  // For now, we'll use RPC or direct table operations
+  // The table should be created via Supabase dashboard SQL editor:
+  /*
+    CREATE TABLE IF NOT EXISTS game_sessions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      completed_at TIMESTAMP WITH TIME ZONE,
+      is_won BOOLEAN DEFAULT FALSE,
+      total_moves INTEGER DEFAULT 0,
+      duration_seconds INTEGER,
+      moves JSONB DEFAULT '[]'::jsonb
+    );
+  */
+
+  // Test connection by selecting from the table
+  const { error } = await supabase
+    .from('game_sessions')
+    .select('id')
+    .limit(1);
+
+  if (error && error.code === '42P01') {
+    // Table doesn't exist - user needs to create it manually
+    throw new Error('Table game_sessions does not exist. Please create it in Supabase dashboard.');
   }
+
+  if (error) {
+    throw error;
+  }
+
+  return true;
 }
 
 export async function createSession(): Promise<string> {
-  const client = await pool.connect();
-  try {
-    const result = await client.query(`
-      INSERT INTO game_sessions (started_at)
-      VALUES (NOW())
-      RETURNING id
-    `);
-    return result.rows[0].id;
-  } finally {
-    client.release();
-  }
+  const { data, error } = await supabase
+    .from('game_sessions')
+    .insert({ started_at: new Date().toISOString() })
+    .select('id')
+    .single();
+
+  if (error) throw error;
+  return data.id;
 }
 
 export async function addMove(sessionId: string, move: Move) {
-  const client = await pool.connect();
-  try {
-    await client.query(`
-      UPDATE game_sessions
-      SET moves = moves || $1::jsonb,
-          total_moves = total_moves + 1
-      WHERE id = $2::uuid
-    `, [JSON.stringify(move), sessionId]);
-  } finally {
-    client.release();
-  }
+  // First get current moves
+  const { data: session, error: fetchError } = await supabase
+    .from('game_sessions')
+    .select('moves, total_moves')
+    .eq('id', sessionId)
+    .single();
+
+  if (fetchError) throw fetchError;
+
+  const currentMoves = session.moves || [];
+  const newMoves = [...currentMoves, move];
+
+  const { error } = await supabase
+    .from('game_sessions')
+    .update({
+      moves: newMoves,
+      total_moves: session.total_moves + 1,
+    })
+    .eq('id', sessionId);
+
+  if (error) throw error;
 }
 
 export async function completeSession(
@@ -77,62 +96,67 @@ export async function completeSession(
   isWon: boolean,
   durationSeconds: number
 ) {
-  const client = await pool.connect();
-  try {
-    await client.query(`
-      UPDATE game_sessions
-      SET completed_at = NOW(),
-          is_won = $1,
-          duration_seconds = $2
-      WHERE id = $3::uuid
-    `, [isWon, durationSeconds, sessionId]);
-  } finally {
-    client.release();
-  }
+  const { error } = await supabase
+    .from('game_sessions')
+    .update({
+      completed_at: new Date().toISOString(),
+      is_won: isWon,
+      duration_seconds: durationSeconds,
+    })
+    .eq('id', sessionId);
+
+  if (error) throw error;
 }
 
 export async function getSession(sessionId: string): Promise<GameSession | null> {
-  const client = await pool.connect();
-  try {
-    const result = await client.query(
-      'SELECT * FROM game_sessions WHERE id = $1::uuid',
-      [sessionId]
-    );
-    return result.rows[0] as GameSession || null;
-  } finally {
-    client.release();
+  const { data, error } = await supabase
+    .from('game_sessions')
+    .select('*')
+    .eq('id', sessionId)
+    .single();
+
+  if (error) {
+    if (error.code === 'PGRST116') return null; // Not found
+    throw error;
   }
+  return data as GameSession;
 }
 
 export async function getAllSessions(): Promise<GameSession[]> {
-  const client = await pool.connect();
-  try {
-    const result = await client.query(`
-      SELECT * FROM game_sessions
-      ORDER BY started_at DESC
-      LIMIT 100
-    `);
-    return result.rows as GameSession[];
-  } finally {
-    client.release();
-  }
+  const { data, error } = await supabase
+    .from('game_sessions')
+    .select('*')
+    .order('started_at', { ascending: false })
+    .limit(100);
+
+  if (error) throw error;
+  return data as GameSession[];
 }
 
 export async function getStats() {
-  const client = await pool.connect();
-  try {
-    const result = await client.query(`
-      SELECT
-        COUNT(*) as total_games,
-        COUNT(*) FILTER (WHERE is_won = true) as wins,
-        AVG(total_moves) FILTER (WHERE is_won = true) as avg_moves_to_win,
-        AVG(duration_seconds) FILTER (WHERE is_won = true) as avg_time_to_win,
-        MIN(total_moves) FILTER (WHERE is_won = true) as best_moves,
-        MIN(duration_seconds) FILTER (WHERE is_won = true) as best_time
-      FROM game_sessions
-    `);
-    return result.rows[0];
-  } finally {
-    client.release();
-  }
+  const { data, error } = await supabase
+    .from('game_sessions')
+    .select('*');
+
+  if (error) throw error;
+
+  const sessions = data || [];
+  const wonSessions = sessions.filter(s => s.is_won);
+
+  return {
+    total_games: sessions.length.toString(),
+    wins: wonSessions.length.toString(),
+    avg_moves_to_win: wonSessions.length > 0
+      ? (wonSessions.reduce((sum, s) => sum + s.total_moves, 0) / wonSessions.length).toFixed(1)
+      : null,
+    avg_time_to_win: wonSessions.length > 0
+      ? (wonSessions.reduce((sum, s) => sum + (s.duration_seconds || 0), 0) / wonSessions.length).toFixed(0)
+      : null,
+    best_moves: wonSessions.length > 0
+      ? Math.min(...wonSessions.map(s => s.total_moves)).toString()
+      : null,
+    best_time: wonSessions.length > 0
+      ? Math.min(...wonSessions.filter(s => s.duration_seconds).map(s => s.duration_seconds!)).toString()
+      : null,
+  };
 }
