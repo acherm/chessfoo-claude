@@ -2,6 +2,8 @@
 
 Un puzzle d'échecs interactif où le joueur doit échanger les positions des cavaliers blancs et noirs sur un échiquier 3x3.
 
+**Demo en ligne : https://chessfoo-claude.vercel.app/**
+
 ## Spécification du jeu
 
 ### Configuration initiale
